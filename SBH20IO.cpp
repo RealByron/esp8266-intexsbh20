@@ -177,15 +177,13 @@ namespace ERROR
 }
 
 // special display values
-inline uint8 display2Byte(uint16 v) { return v & 0x000F; }
 inline uint16 display2Num(uint16 v) { return (((v >> 12) & 0x000F) * 100) + (((v >> 8) & 0x000F) * 10) + ((v >> 4) & 0x000F); }
 inline uint16 display2Error(uint16 v) { return (v >> 4) & 0x0FFF; }
-inline bool displayIsTemp(uint16 v) { return display2Byte(v) == DIGIT::LET_C || display2Byte(v) == DIGIT::LET_F; }
+inline bool displayIsTemp(uint16 v) { return (v & 0x000F) == DIGIT::LET_C || (v & 0x000F) == DIGIT::LET_F; }
 inline bool displayIsError(uint16 v) { return (v & 0xF000) == 0xE000; }
 inline bool displayIsBlank(uint16 v) { return (v & 0xFFF0) == ((DIGIT::OFF << 12) + (DIGIT::OFF << 8) + (DIGIT::OFF << 4)); }
 
 volatile SBH20IO::State SBH20IO::state;
-volatile SBH20IO::IsrState SBH20IO::isrState;
 volatile SBH20IO::Buttons SBH20IO::buttons;
 
 // @TODO detect when latch signal stays low
@@ -528,7 +526,7 @@ bool SBH20IO::changeWaterTemp(int up)
 uint16 SBH20IO::convertDisplayToCelsius(uint16 value) const
 {
   uint16 celsiusValue = display2Num(value);
-  uint16 tempUint = display2Byte(value);
+  uint16 tempUint = value & 0x000F;
   if (tempUint == DIGIT::LET_F)
   {
     // convert °F to °C
@@ -550,68 +548,64 @@ ICACHE_RAM_ATTR void SBH20IO::latchFallingISR(void *arg)
 
 ICACHE_RAM_ATTR void SBH20IO::clockRisingISR(void *arg)
 {
+  static uint16 frame=0x0000;
+  static uint16 receivedBits=0x0000;
   bool data = !digitalRead(PIN::DATA);
   bool enable = digitalRead(PIN::LATCH) == LOW;
 
-  /*
-    SBH20IO* sbh20io = (SBH20IO*)arg;
-    volatile State& state = sbh20io->state;
-    volatile IsrState& isrState = sbh20io->isrState;
-  */
-
-  if (enable || isrState.receivedBits == (FRAME::BITS - 1))
+  if (enable || receivedBits == (FRAME::BITS - 1))
   {
-    isrState.frameValue = (isrState.frameValue << 1) + data;
-    isrState.receivedBits++;
+    frame = (frame << 1) + data;
+    receivedBits++;
 
-    if (isrState.receivedBits == FRAME::BITS)
+    if (receivedBits == FRAME::BITS)
     {
       state.frameCounter++;
 
-      if (isrState.frameValue == FRAME_TYPE::CUE)
+      if (frame == FRAME_TYPE::CUE)
       {
         // cue frame, ignore
         // DEBUG_MSG("\nC");
       }
-      else if (isrState.frameValue & FRAME_TYPE::DIGIT)
+      else if (frame & FRAME_TYPE::DIGIT)
       {
         // display frame
         // DEBUG_MSG("\nD");
-        decodeDisplay();
+        decodeDisplay(frame);
       }
-      else if (isrState.frameValue & FRAME_TYPE::LED)
+      else if (frame & FRAME_TYPE::LED)
       {
         // LED frame
         // DEBUG_MSG("\nL");
-        decodeLED();
+        decodeLED(frame);
       }
-      else if (isrState.frameValue & FRAME_TYPE::BUTTON)
+      else if (frame & FRAME_TYPE::BUTTON)
       {
         // button frame
         // DEBUG_MSG("\nB");
-        decodeButton();
+        decodeButton(frame);
       }
-      else if (isrState.frameValue != 0)
+      else if (frame != 0)
       {
         // unsupported frame
         // DEBUG_MSG("\nU");
       }
 
-      isrState.receivedBits = 0;
+      receivedBits = 0;
     }
   }
   else
   {
     // DEBUG_MSG(" %d ", receivedBits);
-    isrState.receivedBits = 0;
-    state.frameCounter++;
+    frame = 0;
+    receivedBits = 0;
   }
 }
 
-ICACHE_RAM_ATTR inline void SBH20IO::decodeDisplay()
+ICACHE_RAM_ATTR inline uint8 SBH20IO::BCD(uint16 value)
 {
   uint8 digit;
-  switch (isrState.frameValue & FRAME_DIGIT::SEGMENTS)
+  switch (value & FRAME_DIGIT::SEGMENTS)
   {
   case FRAME_DIGIT::OFF:
     digit = DIGIT::OFF;
@@ -659,302 +653,184 @@ ICACHE_RAM_ATTR inline void SBH20IO::decodeDisplay()
     digit = DIGIT::LET_F; // for °F
     break;
   case FRAME_DIGIT::LET_N:
+  default:
     digit = DIGIT::LET_N; // for error code "END"
     break;
-
-  default:
-    // unsupported, ignore
-    return;
   }
+  return digit;
+}
 
-  switch (isrState.frameValue & FRAME_TYPE::DIGIT)
+ICACHE_RAM_ATTR inline void SBH20IO::decodeDisplay(uint16 frame)
+{
+  static uint16 value = 0;  // current display
+  static uint16 pValue = 0; // previous display
+  static uint16 stableValue = 0;  
+  static uint debounce = 0;   // quick debounce
+
+  static uint8 largeDebounce =0; // larger than blank frames count
+  static uint16 stableTemp=0x0000; // stable temperature
+
+  uint8 digit = BCD(frame);
+
+  if (frame & FRAME_DIGIT::POS_1)
   {
-  case FRAME_DIGIT::POS_1:
-    // DEBUG_MSG("1");
-    isrState.displayValue = (isrState.displayValue & 0x0FFF) + (digit << 12);
-    isrState.receivedDigits = DIGIT::POS_1;
-    break;
-
-  case FRAME_DIGIT::POS_2:
-    // DEBUG_MSG("2");
-    if (isrState.receivedDigits == DIGIT::POS_1)
-    {
-      isrState.displayValue = (isrState.displayValue & 0xF0FF) + (digit << 8);
-      isrState.receivedDigits |= DIGIT::POS_2;
-    }
-    break;
-
-  case FRAME_DIGIT::POS_3:
-    // DEBUG_MSG("3");
-    if (isrState.receivedDigits == DIGIT::POS_1_2)
-    {
-      isrState.displayValue = (isrState.displayValue & 0xFF0F) + (digit << 4);
-      isrState.receivedDigits |= DIGIT::POS_3;
-    }
-    break;
-
-  case FRAME_DIGIT::POS_4:
-    // DEBUG_MSG("4");
-    if (isrState.receivedDigits == DIGIT::POS_1_2_3)
-    {
-      isrState.displayValue = (isrState.displayValue & 0xFFF0) + digit;
-      isrState.receivedDigits = DIGIT::POS_ALL;
-    }
-    break;
+    value = (value & 0x0FFF) | (digit << 12);
   }
-
-  if (isrState.receivedDigits == DIGIT::POS_ALL)
+  else if (frame & FRAME_DIGIT::POS_2)
   {
-    if (isrState.displayValue == isrState.latestDisplayValue)
+    value = (value & 0xF0FF) | (digit << 8);
+  }
+  else if (frame & FRAME_DIGIT::POS_3)
+  {
+    value = (value & 0xFF0F) | (digit << 4);
+  }
+  else if (frame & FRAME_DIGIT::POS_4)
+  {
+    value = (value & 0xFFF0) | digit;
+    if (value != pValue)
     {
-      // display is stable, might be blinking
-      // DEBUG_MSG(" s%x", isrState.displayValue);
-      isrState.stableDisplayValueCount--;
-      if (isrState.stableDisplayValueCount == 0)
-      {
-        // DEBUG_MSG("S%x ", isrState.displayValue);
-        isrState.stableDisplayValueCount = CONFIRM_FRAMES::DISP;
-        // DEBUG_MSG("O");
-        if (isrState.isDisplayBlinking)
-        {
-          if (diff(state.frameCounter, isrState.lastBlankDisplayFrameCounter) > BLINK::STOPPED_FRAMES)
-          {
-            // blinking is over, clear desired temp
-            // DEBUG_MSG("b");
-            isrState.isDisplayBlinking = false;
-            isrState.latestBlinkingTemp = UNDEF::USHORT;
-          }
-        }
-
-        if (!displayIsError(isrState.displayValue))
-        {
-          // display does not show an error
-          // DEBUG_MSG("e");
-          if (displayIsTemp(isrState.displayValue))
-          {
-            // display shows a temperature
-            // DEBUG_MSG("T");
-            if (isrState.isDisplayBlinking)
-            {
-              // display is blinking
-              if (isrState.displayValue == isrState.latestBlinkingTemp)
-              {
-                // blinking temp is stable
-                isrState.stableBlinkingWaterTempCount++;
-                // DEBUG_MSG(" DS%d ", isrState.stableDesiredWaterTempCount);
-              }
-              else if (diff(state.frameCounter, isrState.lastBlankDisplayFrameCounter) < BLINK::TEMP_FRAMES)
-              {
-                // blinking temp has changed (is read after a blank screen and set at next black screen)
-                // DEBUG_MSG(" DC%x ", isrState.displayValue);
-                isrState.latestBlinkingTemp = isrState.displayValue;
-                isrState.stableBlinkingWaterTempCount = 0;
-              }
-            }
-            else
-            {
-              // display is not blinking
-              if (isrState.displayValue == isrState.latestWaterTemp)
-              {
-                // new actual temp is stable
-                // DEBUG_MSG("A%d", stableWaterTempCount);
-                isrState.stableWaterTempCount--;
-                if (isrState.stableWaterTempCount == 0)
-                {
-                  // save actual temp
-                  if (state.waterTemp != isrState.displayValue)
-                  {
-                    // DEBUG_MSG(" AT ");
-                    state.waterTemp = isrState.displayValue;
-                  }
-
-                  // get temp unit
-                  uint16 tempUnit = display2Byte(isrState.displayValue);
-                  if (tempUnit != isrState.latestTempUnit)
-                  {
-                    isrState.latestTempUnit = tempUnit;
-                  }
-
-                  isrState.stableWaterTempCount = CONFIRM_FRAMES::WATER_TEMP_ACT;
-
-                  // clear error
-                  // state.error = ERROR::NONE;
-                }
-              }
-              else
-              {
-                // actual temp is changed
-                // DEBUG_MSG("a");
-                isrState.latestWaterTemp = isrState.displayValue;
-                isrState.stableWaterTempCount = CONFIRM_FRAMES::WATER_TEMP_ACT;
-              }
-            }
-          }
-          else
-          {
-            // unsupported display state (no error, no temperature)
-            // DEBUG_MSG("t");
-          }
-        }
-        else
-        {
-          // display shows error code
-          // DEBUG_MSG("E");
-          state.error = display2Error(isrState.displayValue);
-        }
-      }
-    }
-    else if (displayIsBlank(isrState.displayValue))
-    {
-      // display is blank
-      if (isrState.stableDisplayBlankCount)
-      {
-        isrState.stableDisplayBlankCount--;
-      }
-      else
-      {
-        // display is blank
-        // DEBUG_MSG("B");
-        if (isrState.isDisplayBlinking)
-        {
-          // already blinking
-          if (isrState.latestBlinkingTemp != UNDEF::USHORT)
-          {
-            // new temp
-            isrState.blankCounter++;
-          }
-
-          // if display was already blinking several times, save desired temp
-          // otherwise could be start of error
-          if (!state.error && isrState.blankCounter > 2 && isrState.stableBlinkingWaterTempCount >= CONFIRM_FRAMES::WATER_TEMP_SET && state.desiredTemp != isrState.latestBlinkingTemp)
-          {
-            // DEBUG_MSG("\nDT%x ", isrState.displayValue);
-            state.desiredTemp = isrState.latestBlinkingTemp;
-          }
-
-          isrState.latestBlinkingTemp = UNDEF::USHORT;
-          isrState.stableBlinkingWaterTempCount = 0;
-        }
-        else
-        {
-          // blinking start
-          isrState.isDisplayBlinking = true;
-          isrState.blankCounter = 0;
-        }
-        isrState.lastBlankDisplayFrameCounter = state.frameCounter;
-      }
+      pValue = value;
+      debounce = 3;
     }
     else
     {
-      // display value changed
-      isrState.latestDisplayValue = isrState.displayValue;
-      isrState.stableDisplayValueCount = CONFIRM_FRAMES::DISP;
-      isrState.stableDisplayBlankCount = CONFIRM_FRAMES::DISP;
+      if (debounce)
+        debounce--;
+      else if (value != stableValue)
+      {
+        largeDebounce = 250;
+
+        stableValue = value;
+        if (displayIsBlank(value))
+        {
+          if (state.desiredTemp != stableTemp)
+          {
+            state.desiredTemp = stableTemp;
+            state.stateUpdated = true;
+          }
+        }
+        else if (displayIsError(value))
+        {
+          state.error = display2Error(value);
+        }
+        else
+        {
+          stableTemp = stableValue;
+        }
+      }
+      if (largeDebounce)
+      {
+        largeDebounce--;
+      }
+      else
+      {
+        if (state.waterTemp != stableTemp)
+        {
+          state.waterTemp = stableTemp;
+          state.stateUpdated = true;
+        }
+      }
     }
   }
-  // else not all digits set yet
 }
 
-ICACHE_RAM_ATTR inline void SBH20IO::decodeLED()
+ICACHE_RAM_ATTR inline void SBH20IO::decodeLED(uint16 frame)
 {
-  if (isrState.frameValue == isrState.latestLedStatus)
+  static uint16 pFrame=0x000;
+  static int count=0;
+
+  if (frame == pFrame)
   {
     // wait for confirmation
-    isrState.stableLedStatusCount--;
-    if (isrState.stableLedStatusCount == 0)
+    count--;
+    if (count == 0)
     {
-      // DEBUG_MSG("\nL%x", frameValue);
-      state.ledStatus = isrState.frameValue;
-      state.buzzer = !(state.ledStatus & FRAME_LED::NO_BEEP);
-      state.stateUpdated = true;
-      isrState.stableLedStatusCount = CONFIRM_FRAMES::LED;
-
-      // clear buttons if buzzer is on
-      if (state.buzzer)
+      if (state.ledStatus != frame)
       {
-        buttons.toggleBubble = 0;
-        buttons.toggleFilter = 0;
-        buttons.toggleHeater = 0;
-        buttons.togglePower = 0;
-        buttons.toggleTempUp = 0;
-        buttons.toggleTempDown = 0;
+        state.ledStatus = frame;
+        state.buzzer = !(state.ledStatus & FRAME_LED::NO_BEEP);
+        state.stateUpdated = true;
+
+        // clear buttons if buzzer is on
+        if (state.buzzer)
+        {
+          buttons.toggleBubble = 0;
+          buttons.toggleFilter = 0;
+          buttons.toggleHeater = 0;
+          buttons.togglePower = 0;
+          buttons.toggleTempUp = 0;
+          buttons.toggleTempDown = 0;
+        }
       }
     }
   }
   else
   {
     // LED status changed
-    isrState.latestLedStatus = isrState.frameValue;
-    isrState.stableLedStatusCount = CONFIRM_FRAMES::LED;
+    pFrame = frame;
+    count = 3;
   }
 }
 
-ICACHE_RAM_ATTR inline void SBH20IO::decodeButton()
+ICACHE_RAM_ATTR inline void SBH20IO::decodeButton(uint16 frame)
 {
-  if (isrState.frameValue & FRAME_BUTTON::FILTER)
+  bool reply =false;
+  if (frame & FRAME_BUTTON::FILTER)
   {
     // DEBUG_MSG("F");
     if (buttons.toggleFilter)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.toggleFilter--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::HEATER)
+  else if (frame & FRAME_BUTTON::HEATER)
   {
     // DEBUG_MSG("H");
     if (buttons.toggleHeater)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.toggleHeater--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::BUBBLE)
+  else if (frame & FRAME_BUTTON::BUBBLE)
   {
     // DEBUG_MSG("B");
     if (buttons.toggleBubble)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.toggleBubble--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::POWER)
+  else if (frame & FRAME_BUTTON::POWER)
   {
     // DEBUG_MSG(" P");
     if (buttons.togglePower)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.togglePower--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::TEMP_UP)
+  else if (frame & FRAME_BUTTON::TEMP_UP)
   {
     // DEBUG_MSG("U");
     if (buttons.toggleTempUp)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.toggleTempUp--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::TEMP_DOWN)
+  else if (frame & FRAME_BUTTON::TEMP_DOWN)
   {
     // DEBUG_MSG("D");
     if (buttons.toggleTempDown)
     {
-      isrState.reply = true;
+      reply = true;
       buttons.toggleTempDown--;
     }
   }
-  else if (isrState.frameValue & FRAME_BUTTON::TEMP_UNIT)
-  {
-    // DEBUG_MSG("T");
-  }
-  else
-  {
-    // DEBUG_MSG(" B%x", frameValue);
-  }
 
-  if (isrState.reply)
+  if (reply)
   {
     pinMode(PIN::DATA, OUTPUT);
   }
