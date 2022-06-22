@@ -30,7 +30,6 @@
 
 #include <ESP8266WiFi.h>
 
-
 // bit mask for LEDs
 namespace FRAME_LED
 {
@@ -49,6 +48,7 @@ namespace FRAME_DIGIT
   const uint16 POS_2 = 0x0020;
   const uint16 POS_3 = 0x0800;
   const uint16 POS_4 = 0x0004;
+  const uint16 POS_ALL = POS_1 | POS_2 | POS_3 | POS_4;
 
   // bit mask of 7-segment display element
   const uint16 SEGMENT_A = 0x2000;
@@ -92,6 +92,7 @@ namespace FRAME_BUTTON
   const uint16 TEMP_UP = 0x1000;
   const uint16 TEMP_DOWN = 0x0080;
   const uint16 TEMP_UNIT = 0x2000;
+  const uint16 ALL = POWER | FILTER | HEATER | BUBBLE | TEMP_UP | TEMP_DOWN | TEMP_UNIT;
 }
 
 // frame type markers
@@ -99,8 +100,8 @@ namespace FRAME_TYPE
 {
   const uint16 CUE = 0x0100;
   const uint16 LED = 0x4000;
-  const uint16 DIGIT = FRAME_DIGIT::POS_1 | FRAME_DIGIT::POS_2 | FRAME_DIGIT::POS_3 | FRAME_DIGIT::POS_4;
-  const uint16 BUTTON = CUE | FRAME_BUTTON::POWER | FRAME_BUTTON::FILTER | FRAME_BUTTON::HEATER | FRAME_BUTTON::BUBBLE | FRAME_BUTTON::TEMP_UP | FRAME_BUTTON::TEMP_DOWN | FRAME_BUTTON::TEMP_UNIT;
+  const uint16 DIGIT = FRAME_DIGIT::POS_ALL;
+  const uint16 BUTTON = CUE | FRAME_BUTTON::ALL;
 }
 
 namespace DIGIT
@@ -128,13 +129,13 @@ namespace ERROR
 {
   // internal binary value of error display (3 letters)
   const uint16 NONE = 0;
-  const uint16 NO_WATER_FLOW = (DIGIT::LET_E << 8) | (9 << 4) | 0;
-  const uint16 WATER_TEMP_LOW = (DIGIT::LET_E << 8) | (9 << 4) | 4;
-  const uint16 WATER_TEMP_HIGH = (DIGIT::LET_E << 8) | (9 << 4) | 5;
-  const uint16 SYSTEM = (DIGIT::LET_E << 8) | (9 << 4) | 6;
-  const uint16 DRY_FIRE_PROTECT = (DIGIT::LET_E << 8) | (9 << 4) | 7;
-  const uint16 TEMP_SENSOR = (DIGIT::LET_E << 8) | (9 << 4) | 9;
-  const uint16 HEATING_ABORTED = (DIGIT::LET_E << 8) | (DIGIT::LET_N << 4) | DIGIT::LET_D;
+  const uint16 NO_WATER_FLOW = 0xE90;
+  const uint16 WATER_TEMP_LOW = 0xE94;
+  const uint16 WATER_TEMP_HIGH = 0xE95;
+  const uint16 SYSTEM = 0xE96;
+  const uint16 DRY_FIRE_PROTECT = 0xE97;
+  const uint16 TEMP_SENSOR = 0xE99;
+  const uint16 HEATING_ABORTED = 0xEAD; // A => DIGIT::LET_N ie: "END" => 0xEAD
 
   const uint16 VALUES[] = {NO_WATER_FLOW, WATER_TEMP_LOW, WATER_TEMP_HIGH, WATER_TEMP_HIGH, SYSTEM, DRY_FIRE_PROTECT, TEMP_SENSOR, HEATING_ABORTED};
   const unsigned int COUNT = sizeof(VALUES) / sizeof(uint16);
