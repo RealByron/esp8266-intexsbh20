@@ -198,6 +198,7 @@ void SBH20IO::setup(LANG language)
   pinMode(PIN::DATA, INPUT);
   pinMode(PIN::LATCH, INPUT);
 
+  attachInterruptArg(digitalPinToInterrupt(PIN::LATCH), SBH20IO::latchFallingISR, this, FALLING);
   attachInterruptArg(digitalPinToInterrupt(PIN::CLOCK), SBH20IO::clockRisingISR, this, RISING);
 }
 
@@ -539,6 +540,11 @@ uint16 SBH20IO::convertDisplayToCelsius(uint16 value) const
   }
 
   return (celsiusValue >= 0) && (celsiusValue <= 60) ? celsiusValue : UNDEF::USHORT;
+}
+
+ICACHE_RAM_ATTR void SBH20IO::latchFallingISR(void *arg)
+{
+  pinMode(PIN::DATA, INPUT);
 }
 
 ICACHE_RAM_ATTR void SBH20IO::clockRisingISR(void *arg)
@@ -949,17 +955,6 @@ ICACHE_RAM_ATTR inline void SBH20IO::decodeButton()
 
   if (isrState.reply)
   {
-    // delay around 5 µs relative to rising edge of latch signal before pulsing
-    // pulse should be around 2 µs and must be completed before next falling edge of clock
-#if F_CPU == 160000000L
-    delayMicroseconds(1);
     pinMode(PIN::DATA, OUTPUT);
-    delayMicroseconds(3);
-    pinMode(PIN::DATA, INPUT);
-#else
-    //#error "160 MHz CPU frequency required! Pulse timing not possible at 80 MHz, because the code above takes too long to reach this point."
-    // at least using Arduino methods
-#endif
-    isrState.reply = false;
   }
 }
